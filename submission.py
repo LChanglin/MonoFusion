@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import argparse
 import datetime
 from glob import glob
-from selfttc.self_ttc_agg4gxr3 import SelfTTC
+from monofusion.model import MonoFusion
 from utils.draw import disp2rgb, flow_uv_to_colors, flow_to_image
 
 parser = argparse.ArgumentParser()
@@ -64,6 +64,11 @@ parser.add_argument('--num_scales', default=1, type=int,
 parser.add_argument('--feature_channels', default=128, type=int)
 parser.add_argument('--upsample_factor', default=8, type=int)
 parser.add_argument('--num_head', default=1, type=int)
+parser.add_argument('--num_iterations', default=3, type=int,
+                    help='number of texture-scale fusion recurrent iterations: '
+                         '1 gives MonoFusion (single fusion-decode pass), '
+                         '>1 gives MonoFusion-R (recurrent refinement, weight-shared '
+                         'across iterations, see Fig. 3 of the paper)')
 parser.add_argument('--ffn_dim_expansion', default=4, type=int)
 parser.add_argument('--num_transformer_layers', default=6, type=int)
 parser.add_argument('--reg_refine', action='store_true',
@@ -90,8 +95,8 @@ parser.add_argument('--gamma', default=0.9, type=float,
                     help='exponential weighting')
 
 # predict on sintel and kitti test set for submission
-parser.add_argument('--kittidataset', default='/mnt/pool2/lcl/data/data_scene_flow/training/', type=str)
-parser.add_argument('--drivingdataset', default='/mnt/pool2/lcl/data/Driving/', type=str)
+parser.add_argument('--kittidataset', default='./data/kitti/data_scene_flow/training/', type=str)
+parser.add_argument('--drivingdataset', default='./data/Driving/', type=str)
 parser.add_argument('--submission', action='store_true',
                     help='submission to sintel or kitti test sets')
 parser.add_argument('--output_path', default='output', type=str,
@@ -186,12 +191,13 @@ def writeFlowKITTI(filename, uv):
     cv2.imwrite(filename, uv[..., ::-1])
 
 def main():
-    model_loaded = SelfTTC(num_scales=args.num_scales,
+    model_loaded = MonoFusion(num_scales=args.num_scales,
                             feature_channels=args.feature_channels,
                             upsample_factor=args.upsample_factor,
                             num_head=args.num_head,
                             ffn_dim_expansion=args.ffn_dim_expansion,
                             num_transformer_layers=args.num_transformer_layers,
+                            num_iterations=args.num_iterations,
                             reg_refine=args.reg_refine,
                             train=False).to(device)
     num_params = sum(p.numel() for p in model_loaded.parameters())
@@ -308,77 +314,6 @@ def main():
             # txt_result = scale[0,0].detach().cpu().numpy()
 
         print('t: ',total/196)
-    # w, h = 1152, 320
-    # # w, h = 480, 270
-    # startx=4300
-    # endx=startx+500
-    # total_t = 0
-    # interval = 4
-    # with torch.no_grad():
-    #     for test_id in range(startx,endx):
-    #         print(filenames[test_id+3][-8:-4])
-
-    #         image1 = Image.open(filenames[test_id])
-    #         image2 = Image.open(filenames[test_id + interval])
-    #         # print(filenames[test_id+3], test_id+3)
-    #         image1 = np.array(image1).astype(np.uint8)
-    #         image2 = np.array(image2).astype(np.uint8)
-    #         ori_shape = image1.shape
-    #         ori_size = image1.shape[0:2] 
-    #         image1 = cv2.resize(image1, (w,h))
-    #         image2 = cv2.resize(image2, (w,h))
-    #         image1 = torch.from_numpy(image1).permute(2, 0, 1).float().unsqueeze(0).to(device)
-    #         image2 = torch.from_numpy(image2).permute(2, 0, 1).float().unsqueeze(0).to(device)
-
-    #         padding_factor = 32
-    #         inference_size = [int(np.ceil(image1.size(-2) / padding_factor)) * padding_factor,
-    #                         int(np.ceil(image1.size(-1) / padding_factor)) * padding_factor]
-
-    #         # ori_size = image1.shape[-2:]
-    #         # if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
-    #         #     image1 = F.interpolate(image1, size=inference_size, mode='bilinear',
-    #         #                             align_corners=True)
-    #         #     image2 = F.interpolate(image2, size=inference_size, mode='bilinear',
-    #         #                             align_corners=True)
-
-    #         start = time.time()
-    #         scale, flow, _ = model_loaded(image1, image2,
-    #                     attn_type=args.attn_type,
-    #                     attn_splits_list=args.attn_splits_list,
-    #                     corr_radius_list=args.corr_radius_list,
-    #                     prop_radius_list=args.prop_radius_list,
-    #                     num_reg_refine=args.num_reg_refine,
-    #                     testing=True)
-    #         end = time.time()-start
-    #         # print(end)
-
-    #         if test_id>startx+10:
-    #             #print(total_t, end)
-    #             total_t += end
-                
-    #         flow_pr = scale
-
-    #         # resize back
-    #         if inference_size[0] != ori_size[0] or inference_size[1] != ori_size[1]:
-    #             flow_pr = F.interpolate(flow_pr, size=ori_size, mode='bilinear',
-    #                                     align_corners=True)
-    #             flow = F.interpolate(flow, size=ori_size, mode='bilinear',
-    #                                     align_corners=True)
-    #             # print(ori_size[-1], inference_size[-1], torch.max(flow[:,0:1,...]), torch.max(flow[:,1:,...]))
-    #             flow[:,0:1,...] = flow[:,0:1,...] * ori_size[-1] / inference_size[-1]
-    #             flow[:,1:,...] = flow[:,1:,...] * ori_size[0] / inference_size[0]
-    #         # print(flow_pr.shape, flow.shape, ori_size[-1] / inference_size[-1])
-
-    #         out_of_viz = flow_to_image((flow.permute(0,2,3,1).detach().cpu().numpy())[0])
-    #         cv2.imwrite(os.path.join(out_dir,  'flow'+str(test_id)+'.jpg'), out_of_viz)
-
-
-    #         ttc_warp_image2 = (flow_pr[0].transpose(0,1).transpose(1,2) - 0.5) / (1.0) # [H, W, 2]
-    #         ttc_warp_image2 = disp2rgb(np.clip(ttc_warp_image2.detach().cpu().numpy(), 0.0, 1.0))
-    #         ttc_warp_image2 = ttc_warp_image2*255.0
-    #         cv2.imwrite(os.path.join(out_dir, 'scale'+str(test_id)+'.png'), ttc_warp_image2)
-
-    #     # print("????: ", total_t/100)
 
 if __name__ == "__main__":
     main()

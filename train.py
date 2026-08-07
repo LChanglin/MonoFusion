@@ -9,7 +9,7 @@ import datetime
 import torch.distributed as dist
 
 import dataloader.dataset as datasets
-from selfttc.self_ttc_agg4gxr3 import SelfTTC
+from monofusion.model import MonoFusion
 from utils.trainer import TTCTrainer
 
 time_stamp = datetime.datetime.now().strftime("%y_%m_%d-%H_%M_%S")
@@ -70,7 +70,11 @@ parser.add_argument('--num_scales', default=1, type=int,
 parser.add_argument('--num_head', default=1, type=int)
 parser.add_argument('--feature_channels', default=128, type=int)
 parser.add_argument('--upsample_factor', default=8, type=int)
-parser.add_argument('-- ', default=1, type=int)
+parser.add_argument('--num_iterations', default=3, type=int,
+                    help='number of texture-scale fusion recurrent iterations: '
+                         '1 gives MonoFusion (single fusion-decode pass), '
+                         '>1 gives MonoFusion-R (recurrent refinement, weight-shared '
+                         'across iterations, see Fig. 3 of the paper)')
 parser.add_argument('--ffn_dim_expansion', default=4, type=int)
 parser.add_argument('--num_transformer_layers', default=6, type=int)
 parser.add_argument('--reg_refine', action='store_true',
@@ -97,8 +101,8 @@ parser.add_argument('--gamma', default=0.9, type=float,
                     help='exponential weighting')
 
 # predict on sintel and kitti test set for submission
-parser.add_argument('--kittidataset', default='/mnt/pool2/lcl/data/data_scene_flow/training/', type=str)
-parser.add_argument('--drivingdataset', default='/mnt/pool2/lcl/data/Driving/', type=str)
+parser.add_argument('--kittidataset', default='./data/kitti/data_scene_flow/training/', type=str)
+parser.add_argument('--drivingdataset', default='./data/Driving/', type=str)
 parser.add_argument('--submission', action='store_true',
                     help='submission to sintel or kitti test sets')
 parser.add_argument('--output_path', default='output', type=str,
@@ -138,31 +142,29 @@ parser.add_argument('--debug', action='store_true')
 args = parser.parse_args()
 
 if args.parallel:
-    # os.environ['CUDA_VISIBLE_DEVICES'] = "0,3"
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
-    # if local_rank>1:
-    #     local_rank = 3
-    # print(local_rank)
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
     parallel = True
 else:
-    torch.cuda.set_device(2)
-    device = torch.device("cuda", 2)
+    gpu_id = args.gpu_ids[0] if isinstance(args.gpu_ids, list) else args.gpu_ids
+    torch.cuda.set_device(gpu_id)
+    device = torch.device("cuda", gpu_id)
 
     parallel = False
 
 def main():
 
     print(device)
-    model = SelfTTC( num_scales=args.num_scales,
+    model = MonoFusion( num_scales=args.num_scales,
                     feature_channels=args.feature_channels,
                     upsample_factor=args.upsample_factor,
                     num_head=args.num_head,
                     ffn_dim_expansion=args.ffn_dim_expansion,
                     num_transformer_layers=args.num_transformer_layers,
                     reg_refine=args.reg_refine,
+                    num_iterations=args.num_iterations,
                     train=True).cuda()
     
     max_lr = args.lr

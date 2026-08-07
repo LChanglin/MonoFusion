@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Training artifacts
+log/
+output/
+checkpoints/
+*.pth
+*.pth.tar
+*.tar
+*.log
+
+# Data
+data/
+datasets/
