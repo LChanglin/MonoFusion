@@ -1,7 +1,5 @@
-# Run the depth-supervised model (used for the FlyingThings3D generalization
-# results, see README.md) on a directory of test images.
 CUDA_VISIBLE_DEVICES=0 python submission.py \
---resume ./pretrained/monofusion_depth.pth.tar \
+--resume "${MONOFUSION_CHECKPOINT:?Set a checkpoint path for this model}" \
 --padding_factor 32 \
 --upsample_factor 4 \
 --num_scales 2 \

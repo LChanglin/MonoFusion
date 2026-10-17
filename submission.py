@@ -59,10 +59,10 @@ parser.add_argument('--strict_resume', action='store_true',
 parser.add_argument('--no_resume_optimizer', action='store_true')
 
 # model: learnable parameters
-parser.add_argument('--num_scales', default=1, type=int,
+parser.add_argument('--num_scales', default=2, type=int,
                     help='feature scales: 1/8 or 1/8 + 1/4')
 parser.add_argument('--feature_channels', default=128, type=int)
-parser.add_argument('--upsample_factor', default=8, type=int)
+parser.add_argument('--upsample_factor', default=4, type=int)
 parser.add_argument('--num_head', default=1, type=int)
 parser.add_argument('--num_iterations', default=3, type=int,
                     help='number of texture-scale fusion recurrent iterations: '
@@ -81,11 +81,11 @@ parser.add_argument('--load_opt', action='store_true',
 # model: parameter-free
 parser.add_argument('--attn_type', default='swin', type=str,
                     help='attention function')
-parser.add_argument('--attn_splits_list', default=[2], type=int, nargs='+',
+parser.add_argument('--attn_splits_list', default=[2,8], type=int, nargs='+',
                     help='number of splits in attention')
-parser.add_argument('--corr_radius_list', default=[-1], type=int, nargs='+',
+parser.add_argument('--corr_radius_list', default=[-1,4], type=int, nargs='+',
                     help='correlation radius for matching, -1 indicates global matching')
-parser.add_argument('--prop_radius_list', default=[-1], type=int, nargs='+',
+parser.add_argument('--prop_radius_list', default=[-1,1], type=int, nargs='+',
                     help='self-attention radius for propagation, -1 indicates global attention')
 parser.add_argument('--num_reg_refine', default=1, type=int,
                     help='number of additional local regression refinement')
@@ -133,9 +133,14 @@ parser.add_argument('--count_time', action='store_true',
 
 parser.add_argument('--debug', action='store_true')
 
+parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+parser.add_argument('--checkpoint_arch', choices=['auto', 'current', 'legacy_scale'], default='auto')
+parser.add_argument('--max_samples', type=int, default=None)
 args = parser.parse_args()
-torch.cuda.set_device(0)
-device = torch.device("cuda")
+device = torch.device(args.device)
+# Match the full-precision migration validation on Ampere/Blackwell GPUs.
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
 
 
 def readPFM(file):
@@ -191,7 +196,16 @@ def writeFlowKITTI(filename, uv):
     cv2.imwrite(filename, uv[..., ::-1])
 
 def main():
+    if args.resume is None:
+        raise ValueError('--resume is required; refusing inference with random weights')
+    checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+    state = checkpoint.get('net', checkpoint.get('state_dict', checkpoint))
+    state = {k.removeprefix('module.'): v for k, v in state.items()}
+    arch = args.checkpoint_arch
+    if arch == 'auto':
+        arch = checkpoint.get('migration', {}).get('checkpoint_arch', 'current')
     model_loaded = MonoFusion(num_scales=args.num_scales,
+                            checkpoint_arch=arch,
                             feature_channels=args.feature_channels,
                             upsample_factor=args.upsample_factor,
                             num_head=args.num_head,
@@ -204,45 +218,32 @@ def main():
     print('Number of params:', num_params)
 
 
-    if args.resume is not None:
-        loc = 'cuda:{}'.format(args.local_rank) if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(args.resume, map_location=loc)
-        if 'net' in checkpoint:
-            # model.load_state_dict(data['net'])
-            #print(data['net'].items())
-            model_loaded.load_state_dict({k.replace('module.', ''): v for k, v in checkpoint['net'].items()})
-        elif 'state_dict' in checkpoint:
-            model_loaded.load_state_dict(checkpoint['state_dict'])
-        else:
-            model_loaded.load_state_dict(checkpoint)
-
+    print(model_loaded.load_state_dict(state, strict=True))
 
     time_stamp = datetime.datetime.now().strftime("%y_%m_%d-%H_%M_%S")
 
     model_loaded.eval()
-    out_dir = "./output/%s_selfcon_ttc"%(time_stamp)
-    if not os.path.isdir(out_dir):
-        os.mkdir(out_dir)
-        os.mkdir(out_dir+'/submit/')
-        os.mkdir(out_dir+'/submit/flow/')
-        os.mkdir(out_dir+'/submit/disp_0/')
-        os.mkdir(out_dir+'/submit/disp_1/')
-
-    # path1, path2 = 'test_img/2341.jpg', 'test_img/2344.jpg'
+    out_dir = args.output_path
+    for folder in ['', 'submit/flow', 'submit/disp_0', 'submit/disp_1']:
+        os.makedirs(os.path.join(out_dir, folder), exist_ok=True)
     inference_dir = args.inference_dir
-    filenames = sorted(glob(inference_dir + '/*.png') + glob(inference_dir + '/*.jpg'))
-    # print(filenames)
-    print('%d images found' % len(filenames))
-
-    w, h = 1216,352
-    # w, h = 960, 288
-    # w, h = 480,270
-    total = 0
+    if inference_dir is None:
+        raise ValueError('--inference_dir is required')
+    filenames = sorted(glob(os.path.join(inference_dir, 'image_2', '*_10.png')))
+    if args.max_samples is not None:
+        filenames = filenames[:args.max_samples]
+    if not filenames:
+        raise FileNotFoundError('No image_2/*_10.png pairs found')
+    print('%d image pairs found' % len(filenames))
+    h, w = args.inference_size or [352, 1216]
+    if h % 32 or w % 32:
+        raise ValueError("Inference height and width must be divisible by 32")
     with torch.no_grad():
-        for test_id in range(0, 200):
+        for file_1 in filenames:
+            test_id = int(os.path.basename(file_1).split("_")[0])
             
-            file_1 = inference_dir+'image_2/'+str(test_id).zfill(6)+'_10.png'
-            file_2 = inference_dir+'image_2/'+str(test_id).zfill(6)+'_11.png'
+            file_1 = os.path.join(inference_dir, 'image_2', f'{test_id:06d}_10.png')
+            file_2 = os.path.join(inference_dir, 'image_2', f'{test_id:06d}_11.png')
 
             image1 = Image.open(file_1).convert('RGB')
             image2 = Image.open(file_2).convert('RGB')
@@ -264,7 +265,7 @@ def main():
                                         align_corners=True)
 
             start = time.time()
-            scale, flow, depth,_ = model_loaded(image1, image2,
+            scale, depth, flow,_ = model_loaded(image1, image2,
                         attn_type=args.attn_type,
                         attn_splits_list=args.attn_splits_list,
                         corr_radius_list=args.corr_radius_list,
@@ -289,20 +290,27 @@ def main():
                 flow[:,1:,...] = flow[:,1:,...] * ori_size[0] / inference_size[0]
             
 
+            if not torch.isfinite(flow).all() or not torch.isfinite(scale).all():
+                raise RuntimeError(f'Non-finite prediction for {test_id:06d}')
             flow = (flow.permute(0,2,3,1).detach().cpu().numpy())[0]
             scale = scale[0].transpose(0,1).transpose(1,2).detach().cpu().numpy()
 
 
+            np.savez_compressed(os.path.join(out_dir, f'{test_id:06d}.npz'), flow=flow, scale=scale[:,:,0])
             output_filename = os.path.join(out_dir+'/submit/flow/', str(test_id).zfill(6)+'_10.png')
             writeFlowKITTI(output_filename, flow)
 
-            file_disp = inference_dir+'disp_ganet_testing/'+str(test_id).zfill(6)+'_10.png'
-            disp = disparity_loader(file_disp)
-            disp2 = disp / scale[:,:,0]
-            disp1 =  (disp * 256).astype('uint16')
-            disp2 =  (disp2 * 256).astype('uint16')
-            cv2.imwrite(out_dir+'/submit/disp_0/'+str(test_id).zfill(6)+'_10.png', disp1)
-            cv2.imwrite(out_dir+'/submit/disp_1/'+str(test_id).zfill(6)+'_10.png', disp2)
+            file_disp = os.path.join(inference_dir, 'disp_ganet_testing', f'{test_id:06d}_10.png')
+            if os.path.isfile(file_disp):
+                disp = disparity_loader(file_disp)
+                disp2 = disp / scale[:,:,0]
+                disp1 =  (disp * 256).astype('uint16')
+                disp2 =  (disp2 * 256).astype('uint16')
+                cv2.imwrite(out_dir+'/submit/disp_0/'+str(test_id).zfill(6)+'_10.png', disp1)
+                cv2.imwrite(out_dir+'/submit/disp_1/'+str(test_id).zfill(6)+'_10.png', disp2)
+
+            else:
+                print('No external disparity for', test_id, '; saving flow and expansion only')
 
             out_of_viz = flow_to_image(flow)
             Image.fromarray(out_of_viz).save(os.path.join(out_dir,  'flow'+str(test_id)+'.jpg'))
@@ -313,7 +321,7 @@ def main():
             # cv2.imwrite(os.path.join(out_dir,  'flow'+str(test_id)+'.jpg'), out_of_viz)
             # txt_result = scale[0,0].detach().cpu().numpy()
 
-        print('t: ',total/196)
+        print('Completed', len(filenames), 'pairs')
 
 if __name__ == "__main__":
     main()

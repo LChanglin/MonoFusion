@@ -16,6 +16,7 @@ from .layers.geometry import flow_wrap
 class MonoFusion(nn.Module):
     def __init__(self,
                  num_scales=2,
+                 checkpoint_arch="current",
                  feature_channels=128,
                  upsample_factor=8,
                  num_head=1,
@@ -45,7 +46,13 @@ class MonoFusion(nn.Module):
                                   num_transformer_layers=num_transformer_layers)
         self.corrnet = FlowNet(num_scales=num_scales, feature_channels=feature_channels,
                                upsample_factor=upsample_factor, reg_refine=reg_refine)
-        self.scalenet = ScaleNet(num_scales=num_scales, feature_channels=feature_channels,
+        if checkpoint_arch not in ("current", "legacy_scale"):
+            raise ValueError(f"Unknown checkpoint architecture: {checkpoint_arch}")
+        scale_net_class = ScaleNet
+        if checkpoint_arch == "legacy_scale":
+            from .network.legacy_scale_net import ScaleNet as scale_net_class
+        self.checkpoint_arch = checkpoint_arch
+        self.scalenet = scale_net_class(num_scales=num_scales, feature_channels=feature_channels,
                                  upsample_factor=upsample_factor, num_head=num_head,
                                  scale_level=num_scales, reg_refine=reg_refine,
                                  num_iterations=num_iterations)

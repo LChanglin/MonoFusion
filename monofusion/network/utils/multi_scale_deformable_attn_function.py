@@ -7,11 +7,14 @@
 import torch
 from torch.cuda.amp import custom_bwd, custom_fwd
 from torch.autograd.function import Function, once_differentiable
-from mmcv.utils import ext_loader
-ext_module = ext_loader.load_ext(
-    '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
+try:
+    from mmcv.utils import ext_loader
+    ext_module = ext_loader.load_ext(
+        '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
+except (ImportError, OSError):
+    ext_module = None
 
-class MultiScaleDeformableAttnFunction_fp32(Function):
+class _CudaMultiScaleDeformableAttnFunction_fp32(Function):
 
     @staticmethod
     @custom_fwd(cast_inputs=torch.float32)
@@ -84,3 +87,14 @@ class MultiScaleDeformableAttnFunction_fp32(Function):
 
         return grad_value, None, None, \
             grad_sampling_loc, grad_attn_weight, None
+
+
+class MultiScaleDeformableAttnFunction_fp32:
+    """Use the original CUDA extension when available, otherwise native PyTorch."""
+    @staticmethod
+    def apply(value, spatial_shapes, level_start_index, locations, weights, im2col_step=1):
+        if ext_module is not None and value.is_cuda:
+            return _CudaMultiScaleDeformableAttnFunction_fp32.apply(
+                value, spatial_shapes, level_start_index, locations, weights, im2col_step)
+        from .torch_ops import deformable_attention
+        return deformable_attention(value, spatial_shapes, locations, weights)

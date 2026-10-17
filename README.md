@@ -1,5 +1,7 @@
 # MonoFusion / MonoFusion-R
 
+> **Checkpoint update (October 17, 2026):** The updated checkpoints have been checked and are available from [Google Drive](https://drive.google.com/drive/folders/1ebfjezbP6rDpzH5ofFLMWLl50YtE8-kT). Both listed downloads were verified against the GPU-validated compatibility release and passed strict parameter loading. **Update this repository, download the new files into `pretrained/`, and run `submission.py` directly—no checkpoint conversion is needed.** The architecture is selected automatically from checkpoint metadata. See the [reproduction Skill](skills/monofusion-reproduce/SKILL.md), [Quick start](#evaluation--inference), and [download checksums and important notes](pretrained/README.md).
+
 ### Digging into Monocular Texture-Scale Feature Fusion for Optical Flow and Optical Expansion Estimation
 
 **Changlin Li, Yeqiang Qian, Chunxiang Wang, Ming Yang**
@@ -24,6 +26,7 @@ Official PyTorch implementation of **MonoFusion** and its recurrent variant **Mo
 - [Datasets](#datasets)
 - [Model Zoo](#model-zoo)
 - [Training](#training)
+- [Reproduction Skill](#reproduction-skill)
 - [Evaluation & Inference](#evaluation--inference)
 - [Results](#results)
 - [Visualization](#visualization)
@@ -62,7 +65,7 @@ Because the recurrent loop is weight-shared, the number of iterations is a pure 
 
 ## Repository Structure
 
-The codebase mirrors the same layout for the main pipeline and the depth-supervised pretraining variant:
+The main pipeline is organized as follows:
 
 ```
 MonoFusion/
@@ -71,10 +74,6 @@ MonoFusion/
 │   ├── layers/                 #   shared building blocks: attention, matching, geometry, position, ...
 │   └── network/                #   texture/scale encoders, fusion decoder, backbone
 │       └── feature_net/        #     texture & scale transformer feature extractors
-├── depth_supervised/            # auxiliary depth-supervised pretraining on FlyingThings3D (training-only depth head)
-│   ├── monofusion_depth/        #   same layout as monofusion/, plus a disp_net.py depth head
-│   ├── train.py / train.sh
-│   └── submission.py / submission.sh
 ├── dataloader/                  # dataset loading & augmentation (FlyingChairs / FlyingThings3D / Driving / KITTI)
 ├── utils/                       # training loop (trainer.py), losses (loss.py), visualization (draw.py)
 ├── pretrained/                  # place downloaded checkpoints here
@@ -83,11 +82,24 @@ MonoFusion/
 └── submission.py / submission.sh # inference / benchmark-submission entry point
 ```
 
-> This structure replaces the original release's cryptic, experiment-suffixed names (e.g. `selfttc/scale_net_agg4gxr3/`, `self_ttc_agg4gxr3.py`) with names that describe what each module actually does. No model weights are affected: parameter names inside each `nn.Module` are unchanged, so previously-trained checkpoints still load correctly.
+> This structure replaces the original release's cryptic, experiment-suffixed names (e.g. `selfttc/scale_net_agg4gxr3/`, `self_ttc_agg4gxr3.py`) with names that describe what each module actually does. Directory renaming preserves parameter names, but some released checkpoints use an earlier single-channel scale decoder and do not match the current architecture. See [checkpoint compatibility](migration/USAGE.txt) before loading those weights.
 
 ## Setup
 
-### Environment
+### Inference environment for the updated checkpoints
+
+The compatibility release was validated with Python 3.13, PyTorch 2.10.0+cu128, and an NVIDIA RTX PRO 5000. A minimal Linux/CUDA environment is:
+
+```bash
+conda create -n monofusion-inference python=3.13 -y
+conda activate monofusion-inference
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+pip install numpy Pillow opencv-python
+```
+
+For a different CUDA version or CPU installation, select the appropriate wheel from the [official PyTorch instructions](https://pytorch.org/get-started/previous-versions/#v2100). The main inference pipeline includes a native PyTorch deformable-attention fallback, so `mmcv-full` is not required for this workflow. The original CUDA extension is still used when available. Do not install the legacy training requirements into this minimal inference environment.
+
+### Original experimental environment
 
 Experiments were run on Ubuntu 20.04, Python 3.8, PyTorch 1.12.0, CUDA 11.3, NVIDIA RTX 3090.
 
@@ -129,32 +141,30 @@ data/
 
 ## Model Zoo
 
-Download all checkpoints from [Google Drive](https://drive.google.com/drive/folders/1ebfjezbP6rDpzH5ofFLMWLl50YtE8-kT) into `./pretrained/` (see [`pretrained/README.md`](./pretrained/README.md) for a per-file description).
+Download the **updated, ready-to-use checkpoints** from [Google Drive](https://drive.google.com/drive/folders/1ebfjezbP6rDpzH5ofFLMWLl50YtE8-kT) into `./pretrained/`. File sizes, direct links, and SHA-256 checksums are listed in [`pretrained/README.md`](./pretrained/README.md).
 
-| Checkpoint | Model | F1-all&darr; | MiD-err&darr; |
-| --- | --- | :---: | :---: |
-| `monofusion_kitti.pth.tar` | MonoFusion, KITTI fine-tuned | 4.48 | 42.60 |
-| `monofusion_r_kitti.pth.tar` | MonoFusion-R, KITTI fine-tuned | **4.27** | **39.86** |
-| `monofusion_depth.pth.tar` | MonoFusion, depth-supervised, FlyingThings3D | 2.63 (EPE) | --- |
+| Checkpoint | Use with this release | Notes |
+| --- | --- | --- |
+| `monofusion_kitti.pth.tar` | `submission.py --num_iterations 1` | Single-pass optical flow and expansion inference |
+| `monofusion_r_kitti.pth.tar` | `submission.py --num_iterations 4` | Recurrent optical flow and expansion inference |
+
+Both verified downloads contain the same 387 trained parameter tensors (21,174,512 parameters), with per-file provenance metadata. They are compatible inference packages, not evidence of distinct training runs. `submission.py` automatically selects `legacy_scale` from the metadata and loads parameters strictly. These files are not drop-in checkpoints for the training scripts, which instantiate a different architecture.
+
+The same parameter tensors passed GPU inference on 40 image pairs at both 1 and 4 iterations. This verifies compatibility and comparisons against historical prediction images; the paper's benchmark results in [Results](#results) have not been re-evaluated as part of this release. If you still have an older checkpoint without migration metadata, follow the [legacy conversion workflow](migration/USAGE.txt) instead of applying it to an already updated file.
 
 ## Training
+
+The commands below describe the original training workflows and require checkpoints matching their model architectures. The updated `legacy_scale` downloads are verified for inference; the training scripts do not automatically select their architecture from migration metadata.
 
 **1. Optical flow / scene flow.** Pretrain on FlyingChairs + FlyingThings3D (200k iters, lr 1e-4, batch size 4), then fine-tune on KITTI (50k iters, lr 5e-5, batch size 3):
 
 ```bash
 # fine-tune on KITTI, starting from a FlyingThings3D-pretrained checkpoint
 # --num_iterations 1 trains MonoFusion, --num_iterations 4 trains MonoFusion-R
-sh train.sh
+MONOFUSION_TRAIN_CHECKPOINT=/path/to/matching-pretrained.pth.tar sh train.sh
 ```
 
 **2. Optical expansion.** Following prior work, first train on the [Driving](https://lmb.informatik.uni-freiburg.de/resources/datasets/SceneFlowDatasets.en.html) dataset (100k iters, lr 1e-4), then fine-tune on KITTI (every 5th KITTI image held out for validation, 60k iters, lr 5e-5) by setting `--stage 'kitti'` (or `'driving'` for the first stage) in `train.sh`.
-
-**3. Depth-supervised pretraining (optional, for FlyingThings3D generalization).** Because FlyingThings3D is a synthetic dataset with weak photometric static-scene cues, we provide an auxiliary, training-only depth-supervision scheme (the depth head is dropped again for inference/KITTI fine-tuning):
-
-```bash
-cd depth_supervised
-sh train.sh
-```
 
 Key training flags (see `train.py --help` for the full list):
 
@@ -166,29 +176,74 @@ Key training flags (see `train.py --help` for the full list):
 | `--stage` | training dataset: `chairs`, `things`, `driving`, `kitti`, `sintel`, ... (see `dataloader/dataset.py`) |
 | `--image_size`, `--lr`, `--epoch`, `--batch_size` | standard training hyperparameters |
 
-## Evaluation & Inference
+## Reproduction Skill
+
+Use the bundled [**monofusion-reproduce Skill**](skills/monofusion-reproduce/SKILL.md) with a coding agent to download verified weights, prepare an inference environment, run the reported four-iteration configuration with a single-pass control, and evaluate the results. Give the agent the skill file and your repository/data paths, for example:
+
+> Use `skills/monofusion-reproduce/SKILL.md` to reproduce MonoFusion's best reported inference configuration on my KITTI data at `/path/to/kitti/training`. Use an available GPU, compare 1 and 4 iterations on the agreed held-out split, and provide measured results and visual comparisons. Distinguish compatibility checks from official paper-score reproduction.
+
+The Skill includes executable helpers:
 
 ```bash
-# dumps KITTI-format flow/disparity predictions for benchmark submission
-sh submission.sh
+# Download both inference packages and verify the pinned release hashes.
+python skills/monofusion-reproduce/scripts/download_checkpoints.py --repo .
+
+# After inference, evaluate raw flow predictions against KITTI ground truth.
+python skills/monofusion-reproduce/scripts/evaluate_flow.py \
+  --predictions output/monofusion_r \
+  --ground-truth /path/to/kitti/training/flow_occ \
+  --output output/monofusion_r_metrics.json
 ```
 
-or directly:
+Use `--ids` with explicit scene IDs for a held-out subset. The evaluator reports local EPE and Fl-all; it does not measure optical-expansion MiD, TTC, or official test-server scores. Without ground truth, the Skill can compare against historical predictions or perform a smoke test and will report the remaining quality-validation gap. Four iterations are the strongest reported configuration, but the Skill checks whether they improve the supplied data rather than assuming they do.
+
+## Evaluation & Inference
+
+Update the repository and download the new checkpoints into `pretrained/` before running inference. No conversion or manual key editing is required for the updated downloads.
 
 ```bash
+git pull --ff-only
+
+# Single-pass inference
+CUDA_VISIBLE_DEVICES=0 python submission.py \
+  --resume ./pretrained/monofusion_kitti.pth.tar \
+  --num_iterations 1 \
+  --inference_dir ./data/kitti/data_scene_flow/testing/ \
+  --output_path ./output/monofusion
+
+# Recurrent inference
 CUDA_VISIBLE_DEVICES=0 python submission.py \
   --resume ./pretrained/monofusion_r_kitti.pth.tar \
   --num_iterations 4 \
-  --inference_dir ./data/kitti/data_scene_flow/testing/
+  --inference_dir ./data/kitti/data_scene_flow/testing/ \
+  --output_path ./output/monofusion_r
 ```
 
-Results (flow `.png`, disparity `.png`, and colorized visualizations) are saved under `./output/`. Submit the KITTI scene-flow predictions to the [KITTI benchmark](https://www.cvlibs.net/datasets/kitti/eval_scene_flow_detail.php?benchmark=scene_flow&result=2efaab1112242238d8dec77411fb10e2df6e0e36) for official numbers.
+`sh submission.sh` also runs the recurrent configuration. Use `--device cpu` for CPU inference, or set `CUDA_VISIBLE_DEVICES` to select a GPU.
+
+The input directory must contain `image_2/*_10.png` and matching `*_11.png` files. Inference defaults to 352×1216; use `--inference_size H W` to override it, with both dimensions divisible by 32. Predictions are resized back to the original image size. `--max_samples N` limits the number of pairs for a quick check.
+
+Outputs include raw flow/scale `.npz` files, KITTI-format flow PNGs under `submit/flow/`, and colorized visualizations. Scene-flow disparity exports additionally require external disparity files at `disp_ganet_testing/*_10.png` inside the input directory. Without them, the script produces flow and expansion only. Submit complete scene-flow predictions to the [KITTI benchmark](https://www.cvlibs.net/datasets/kitti/eval_scene_flow_detail.php?benchmark=scene_flow&result=2efaab1112242238d8dec77411fb10e2df6e0e36) for official scores.
+
+For custom Python inference, select the architecture from the checkpoint metadata:
+
+```python
+import torch
+from monofusion.model import MonoFusion
+
+checkpoint = torch.load("pretrained/monofusion_kitti.pth.tar",
+                        map_location="cpu", weights_only=True)
+model = MonoFusion(num_scales=2, upsample_factor=4, num_iterations=1,
+                   checkpoint_arch=checkpoint["migration"]["checkpoint_arch"])
+model.load_state_dict(checkpoint["net"], strict=True)
+model.eval()
+```
 
 ## Results
 
 All numbers below are monocular unless noted otherwise; see the paper for full tables, per-module ablations, and the FlyingThings3D generalization study.
 
-**Optical Flow (KITTI test set).** F1 = percentage of flow endpoint errors > 3px or > 5%.
+**Optical Flow (KITTI test set).** F1 = percentage of flow endpoint errors > 3px **and** > 5% of the ground-truth flow magnitude.
 
 | Method | Output | F1-all&darr; | F1-bg | F1-fg | Params (M) |
 | --- | --- | :---: | :---: | :---: | :---: |
@@ -237,8 +292,6 @@ All numbers below are monocular unless noted otherwise; see the paper for full t
 | **MonoFusion-R** | **5.94** | 1.81 | 4.27 | 4.81 | 11.61 |
 
 MonoFusion-R also stays competitive with SOTA **RGB-D** scene-flow methods despite using only a single monocular RGB stream (KITTI, non-occluded regions): SF-all **3.78** vs. 3.55 for CamLiFlow (M+D) and 4.53 for RAFT3D (M+D); MonoFusion-R even leads on F1-fg (3.10) and SF-fg (7.68). See the paper for the full occluded/non-occluded breakdown against RGB-D baselines.
-
-**FlyingThings3D generalization (val/clean split, optical flow EPE).** MonoFusion, trained with the auxiliary depth-supervision scheme, generalizes to FlyingThings3D's unconstrained 6-DoF camera/object motion without any architecture change: **2.63** EPE vs. 2.66 for AnyFlow and 2.80 for GMFlow+ (full table in the paper's appendix).
 
 ## Visualization
 

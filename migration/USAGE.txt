@@ -1,0 +1,65 @@
+Legacy checkpoint compatibility
+===============================
+Updated Google Drive downloads already contain migration metadata. Place them in
+pretrained/ and run submission.py directly; do not convert them again. See
+pretrained/README.md for verified download checksums and release limitations.
+
+The conversion instructions below are for older checkpoints without metadata.
+Some released checkpoints have 387 tensors (21,174,512 parameters), a single-channel
+scale decoder and no scale projection. They cannot be
+loaded into the current 407-tensor model by renaming keys alone.
+
+The legacy_scale architecture reuses the existing single-channel decoder and
+broadcasts the scale through positional encoding instead of adding a learned
+projection. The broadcast semantics are inferred from the checkpoint and validated
+against historical predictions, not proven from the original training code.
+The current architecture remains available as checkpoint_arch='current'.
+
+Conversion (Python >=3.9; tested with PyTorch 2.8 and 2.10):
+  python migration/convert_weights.py /path/to/checkpoint.pth.tar \
+    --output-dir pretrained/converted
+
+The converter removes only the leading module. prefix and optimizer state, adds
+architecture metadata, strictly checks the model schema, then reloads the file and
+checks every tensor for exact equality. Do not overwrite your original checkpoint.
+
+Inference (requires torch, numpy, Pillow, opencv-python):
+  python submission.py --resume pretrained/converted/checkpoint.pth.tar \
+    --num_iterations 1 --inference_dir /path/to/kitti/testing \
+    --output_path output/legacy
+
+The input directory must contain image_2/*_10.png and *_11.png. Use --device cpu
+for CPU inference, or CUDA_VISIBLE_DEVICES to select a GPU. The default inference
+size is 352 1216; --inference_size H W must be divisible by 32.
+Use --num_iterations 4 to run the recurrent path. Filenames or iteration counts
+alone do not establish that weights came from distinct training runs.
+
+submission.py reads migration.checkpoint_arch automatically and loads strictly.
+It saves raw NPZ predictions, color visualizations and KITTI flow PNGs. External
+GANet disparity is needed for scene-flow disparity exports; if absent, only flow
+and expansion are produced.
+
+The original MMCV CUDA implementation is used when installed; otherwise native
+PyTorch bilinear grid sampling provides deformable attention. CUDA validation used
+the native implementation on an RTX PRO 5000 with PyTorch 2.10.0+cu128. TF32 is
+disabled in submission.py to match the full-precision validation.
+
+Checks:
+  python migration/test_migration.py /path/to/original.pth.tar \
+    pretrained/converted/checkpoint.pth.tar
+
+Historical prediction comparison, if you have monofusion_c_kittc.zip:
+  python migration/prepare_reference_samples.py /path/to/monofusion_c_kittc.zip
+  python migration/validate.py --checkpoint pretrained/converted/checkpoint.pth.tar \
+    --iterations 1 --limit 40
+  python migration/validate.py --checkpoint pretrained/converted/checkpoint.pth.tar \
+    --iterations 4 --limit 40
+
+Validation sampled every fifth scene (000000 through 000195), frames 10/11,
+and compared against reference output index10. All 40 pairs ran with finite,
+positive scale predictions for both 1 and 4 iterations. RGB visualization MAE
+on the 0-255 scale was 2.3333 / 6.6390 (flow / scale) for 1 iteration, and
+2.3192 / 6.6982 for 4 iterations. Worst 1-iteration scale MAE was 24.1699 on
+scene 000015, with visible sky/distant-region differences. These are comparisons
+to historical predictions, not KITTI ground-truth metrics or reproduced paper
+scores. Original reference weights/preprocessing are not fully established.

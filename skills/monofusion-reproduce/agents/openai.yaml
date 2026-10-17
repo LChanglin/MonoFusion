@@ -1,0 +1,4 @@
+interface:
+  display_name: "MonoFusion Reproduction"
+  short_description: "Verify checkpoints and reproduce MonoFusion inference"
+  default_prompt: "Use $monofusion-reproduce to run the best reported inference configuration and validate it against my KITTI data."

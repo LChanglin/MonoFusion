@@ -1,0 +1,26 @@
+{
+  "verified_on": "2026-10-17",
+  "folder_url": "https://drive.google.com/drive/folders/1ebfjezbP6rDpzH5ofFLMWLl50YtE8-kT",
+  "files": [
+    {
+      "name": "monofusion_kitti.pth.tar",
+      "file_id": "1Zifo-hFbQbGptdq5TRGignfWFhFZNtOY",
+      "bytes": 84831022,
+      "sha256": "64073f9b4a6bbc14e6daa55a3a6b1c83e4427c0dda418d8bc116b7558bbf1564",
+      "architecture": "legacy_scale",
+      "tensor_count": 387,
+      "strict_load": true,
+      "matches_gpu_validated_release": true
+    },
+    {
+      "name": "monofusion_r_kitti.pth.tar",
+      "file_id": "1I2Uv9tU4_aHhTsW7hfi-61WQe1yfwOld",
+      "bytes": 84831872,
+      "sha256": "f99a4dc5beb5f16eb0ee63793d0f7b030dccd91d324dc38efd66dd32f5764a54",
+      "architecture": "legacy_scale",
+      "tensor_count": 387,
+      "strict_load": true,
+      "matches_gpu_validated_release": true
+    }
+  ]
+}

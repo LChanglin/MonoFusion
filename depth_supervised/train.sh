@@ -1,10 +1,6 @@
-# Depth-supervised pretraining on FlyingThings3D (see README.md and paper
-# Appendix "Auxiliary Depth Supervision" for details). The depth head is
-# training-only and is dropped again for KITTI fine-tuning with train.sh at
-# the repository root.
 OMP_NUM_THREADS=8 torchrun --standalone --nnodes=1 --nproc_per_node=4 train.py \
 --load_flow_param \
---save ./pretrained/monofusion_depth.pth.tar \
+--save "${MONOFUSION_CHECKPOINT:?Set a checkpoint path for this model}" \
 --padding_factor 32 \
 --upsample_factor 4 \
 --num_scales 2 \

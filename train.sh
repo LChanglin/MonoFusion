@@ -2,7 +2,7 @@
 # --num_iterations 1 trains MonoFusion (single fusion-decode pass)
 # --num_iterations 4 trains MonoFusion-R (recurrent refinement, used for our best results)
 OMP_NUM_THREADS=8 torchrun --standalone --nnodes=1 --nproc_per_node=4 train.py \
---resume ./pretrained/monofusion_depth.pth.tar \
+--resume "${MONOFUSION_TRAIN_CHECKPOINT:?Set a checkpoint matching the training architecture}" \
 --save ./pretrained/monofusion_r_kitti.pth.tar \
 --padding_factor 32 \
 --upsample_factor 4 \

@@ -2,7 +2,7 @@ import math
 import time
 import torch
 import torch.nn as nn
-from mmcv.cnn import xavier_init, constant_init
+from .utils.torch_ops import xavier_init, constant_init
 
 from .utils.affine import affine, affine_x_y
 from ..layers.position import PositionEmbeddingSine
